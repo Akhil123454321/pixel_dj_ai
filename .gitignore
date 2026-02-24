@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Databases
+*.db
+*.sqlite3
+
+# ML model artifacts (trained locally, not committed)
+ml_models/*.json
+ml_models/*.bin
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Next.js
+.next/
+out/
+
+# Vercel
+.vercel
+
+# Misc
+*.pem
+*.log

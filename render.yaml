@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: pixel-dj-api
+    runtime: python
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///./feedback.db
+      - key: FRONTEND_URL
+        sync: false  # set in Render dashboard to your Vercel URL
+      - key: CORS_ORIGINS
+        sync: false  # set in Render dashboard
+      - key: ML_MODEL_DIR
+        value: ml_models
+      - key: ML_MIN_TRAINING_SAMPLES
+        value: "30"
+      - key: PYTHON_VERSION
+        value: "3.12.0"
