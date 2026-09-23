@@ -1,0 +1,16 @@
+{
+  "watch": [
+    ".env.local",
+    "next.config.ts"
+  ],
+  "ignore": [
+    ".next",
+    "node_modules",
+    ".data",
+    "frontend/src"
+  ],
+  "ext": "local,ts,js,mjs",
+  "exec": "npm run dev:next -- --hostname 127.0.0.1",
+  "signal": "SIGTERM",
+  "delay": "250"
+}

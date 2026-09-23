@@ -1,320 +1,132 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
-import { useSession } from "next-auth/react";
-import Header from "@/components/Header";
-import VibePrompt from "@/components/VibePrompt";
-import SetTimeline from "@/components/SetTimeline";
-import NowPlaying from "@/components/NowPlaying";
-import FeedbackBar from "@/components/FeedbackBar";
-import TransitionView from "@/components/TransitionView";
-import DJReasoning from "@/components/DJReasoning";
-import Visualizer from "@/components/Visualizer";
-import SetQueue from "@/components/SetQueue";
-import { useSpotifyPlayer } from "@/context/SpotifyPlayerContext";
-import { transferPlayback, playTracks, playTrack } from "@/lib/spotify";
+import { type CSSProperties, ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { signIn, useSession } from "next-auth/react";
+import type { ArchiveState, Book, Note, Song, VaultItem } from "@/lib/archive-types";
+import { displayBooks, palette } from "@/lib/archive-types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+type SearchSong = Song & { artist: string };
 
-interface Track {
-  id: number;
-  name: string;
-  artist: string;
-  bpm: number;
-  musicalKey: string;
-  duration: string;
-  energy: number;
-  spotifyUri: string;
-}
-
-interface TimelineEntry {
-  name: string;
-  energy: number;
-  transitionType?: "CUT" | "SHORT_BLEND" | "LONG_BLEND";
-}
-
-interface ReasoningEntry {
-  id: number;
-  text: string;
-  type: "info" | "decision" | "constraint";
-}
-
-interface SetSpec {
-  bpmRange: string;
-  arc: string;
-  vocals: string;
-  cuts: boolean;
+async function archiveRequest<T = ArchiveState>(body?: unknown, method = "GET"): Promise<T> {
+  const response = await fetch("/api/archive", { method, headers: method === "GET" ? undefined : { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "The archive could not be reached.");
+  return data;
 }
 
 export default function Home() {
-  const { data: session } = useSession();
-  const { deviceId, isReady, isPremium, playerState, error: playerError } = useSpotifyPlayer();
+  const { data: session, status: sessionStatus } = useSession();
+  const [archive, setArchive] = useState<ArchiveState | null>(null);
+  const [pending, setPending] = useState<{ accountId?: string; ownerConfigured?: boolean } | null>(null);
+  const [loading, setLoading] = useState(true), [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [invite, setInvite] = useState(""), [joinCode, setJoinCode] = useState(""), [bookQuery, setBookQuery] = useState("");
+  const [selectedBook, setSelectedBook] = useState<Book | null>(null), [bookNotes, setBookNotes] = useState<Note[]>([]), [noteDraft, setNoteDraft] = useState(""), [phrase, setPhrase] = useState("");
+  const [vaultItems, setVaultItems] = useState<VaultItem[] | null>(null), [vaultDraft, setVaultDraft] = useState("");
+  const [showVaultPrompt, setShowVaultPrompt] = useState(false);
+  const [vaultMode, setVaultMode] = useState<"note"|"photo"|"link"|"file"|"envelope"|null>(null);
+  const [linkUrl, setLinkUrl] = useState(""), [linkTitle, setLinkTitle] = useState("");
+  const [stickyColor, setStickyColor] = useState("#fef3a0");
+  const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
+  const [photoCaption, setPhotoCaption] = useState("");
+  const [openNote, setOpenNote] = useState("");
+  const [pinDrag, setPinDrag] = useState<{id:string; startX:number; startY:number; itemX:number; itemY:number} | null>(null);
+  const [expandedPin, setExpandedPin] = useState<string | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [songQuery, setSongQuery] = useState(""), [songs, setSongs] = useState<SearchSong[]>([]), [tapeId, setTapeId] = useState("");
+  const [tapeTitle, setTapeTitle] = useState("");
+  const signedIn = sessionStatus === "authenticated" && !!session?.user?.id;
+  const books = archive?.books ?? displayBooks, tapes = archive?.tapes ?? [];
+  const tape = tapes.find((item) => item.id === tapeId) ?? tapes[0], isOwner = archive?.role === "owner", isPartner = archive?.role === "partner";
+  const randPos = () => ({ x: 5 + Math.random()*78, y: 5 + Math.random()*70 });
+  const randRot = () => +(((Math.random()-0.5)*14).toFixed(1));
+  useEffect(() => { setTapeTitle(tape?.title || ""); }, [tape?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isSetGenerated, setIsSetGenerated] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [transferred, setTransferred] = useState(false);
-  const transferAttempted = useRef(false);
-  const sessionId = useRef("");
-  const [mounted, setMounted] = useState(false);
+  async function refresh() {
+    if (!signedIn) { setLoading(false); return; } setLoading(true); setError("");
+    try { const data = await archiveRequest<ArchiveState | { pending: true; accountId?: string; ownerConfigured?: boolean }>(); if ("pending" in data) setPending(data); else { setArchive(data); setPending(null); setTapeId(data.tapes[0]?.id || ""); } } catch (e) { setError(e instanceof Error ? e.message : "Could not load your archive."); } finally { setLoading(false); }
+  }
+  useEffect(() => { refresh(); }, [signedIn]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function mutate(body: Record<string, unknown>) { setError(""); try { const result = await archiveRequest<ArchiveState>(body, "POST"); setArchive(result); setPending(null); return result; } catch (e) { setError(e instanceof Error ? e.message : "That memory could not be saved."); return null; } }
+  async function addBook(event: FormEvent) {
+    event.preventDefault(); if (!bookQuery.trim()) return;
+    try { const isbn = bookQuery.replace(/[^0-9Xx]/g, ""); const response = await fetch(isbn.length >= 10 ? `https://openlibrary.org/isbn/${isbn}.json` : `https://openlibrary.org/search.json?title=${encodeURIComponent(bookQuery)}&limit=1`); const data = await response.json(); const item = isbn.length >= 10 ? data : data.docs?.[0]; if (!item) throw new Error(); const cover = item.covers?.[0] ?? item.cover_i; const book: Book = { id: item.key ?? crypto.randomUUID(), title: item.title ?? "Untitled book", author: item.author_name?.[0] ?? "A story for us", color: palette[books.length % palette.length], ...(cover ? { cover: `https://covers.openlibrary.org/b/id/${cover}-M.jpg` } : {}) }; await mutate({ action: "addBook", book }); setBookQuery(""); setNotice(`Added “${book.title}” to the shelf.`); } catch { setError("Couldn’t find that book. Try its full title or ISBN."); }
+  }
+  async function openBook(book: Book) { setSelectedBook(book); setVaultItems(null); try { const response = await fetch("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "openBook", bookId: book.id }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setBookNotes(data.notes || []); } catch (e) { setError(e instanceof Error ? e.message : "Could not open the book."); } }
+  async function removeBook(book: Book) { const result = await mutate({ action: "removeBook", bookId: book.id }); if (result) { if (selectedBook?.id === book.id) setSelectedBook(null); setNotice(`Removed “${book.title}” from the shelf.`); } }
+  async function saveNote() { if (!selectedBook || !noteDraft.trim()) return; const book = selectedBook; const result = await mutate({ action: "addNote", bookId: book.id, body: noteDraft }); if (result) { setNoteDraft(""); setNotice("The note is tucked inside the book."); await openBook(book); } }
+  async function deleteNote(noteId: string) { if (!selectedBook) return; const book = selectedBook; const result = await mutate({ action: "removeNote", noteId }); if (result) await openBook(book); }
+  async function configureVaultPhrase() { if (!phrase.trim()) return; const result = await mutate({ action: "configureVault", phrase }); if (result) { setNotice("The secret phrase is set."); setPhrase(""); } }
+  async function unlockVault() { if (!phrase.trim()) return; try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "unlock", phrase }, "POST"); setVaultItems(data.items); setShowVaultPrompt(false); setPhrase(""); } catch (e) { setError(e instanceof Error ? e.message : "The hidden room stayed locked."); } }
+  async function openMyVault() { try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "vault" }, "POST"); setVaultItems(data.items); setSelectedBook(null); } catch (e) { setError(e instanceof Error ? e.message : "Could not open the vault."); } }
+  async function deleteTape(id: string) { const result = await mutate({ action: "removeTape", tapeId: id }); if (result) setTapeId(result.tapes[0]?.id || ""); }
+  async function addVaultNote() { if (!vaultDraft.trim()) return; const pos = randPos(); try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "addMessage", body: vaultDraft, ...pos, rotation: randRot(), color: stickyColor }, "POST"); setVaultItems(data.items); setVaultDraft(""); setVaultMode(null); } catch (e) { setError(e instanceof Error ? e.message : "Could not save that thought."); } }
+  async function addVaultLink() { if (!linkUrl.trim() || !linkTitle.trim()) return; const pos = randPos(); try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "addLink", url: linkUrl, title: linkTitle, ...pos, rotation: randRot() }, "POST"); setVaultItems(data.items); setLinkUrl(""); setLinkTitle(""); setVaultMode(null); } catch (e) { setError(e instanceof Error ? e.message : "Could not save that link."); } }
+  async function addVaultEnvelope() { if (!vaultDraft.trim()) return; const pos = randPos(); try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "addEnvelope", body: vaultDraft, openNote: openNote.trim() || "a letter for you", ...pos, rotation: randRot(), color: stickyColor }, "POST"); setVaultItems(data.items); setVaultDraft(""); setOpenNote(""); setVaultMode(null); } catch (e) { setError(e instanceof Error ? e.message : "Could not seal that envelope."); } }
+  async function removeVaultItem(itemId: string) { try { const data = await archiveRequest<{ items: VaultItem[] }>({ action: "removeItem", itemId }, "POST"); setVaultItems(data.items); } catch (e) { setError(e instanceof Error ? e.message : "Could not remove that item."); } }
+  async function handlePhotoUpload(file: File, caption: string) { const pos = randPos(); const r = randRot(); const captionParam = caption.trim() || file.name; const response = await fetch(`/api/archive/photos?caption=${encodeURIComponent(captionParam)}&x=${pos.x}&y=${pos.y}&rotation=${r}`, { method: "POST", headers: { "Content-Type": file.type }, body: file }); const data = await response.json(); if (response.ok) { setVaultItems(data.items); setVaultMode(null); setPendingPhoto(null); setPhotoCaption(""); } else setError(data.error || "Could not save photo."); }
+  async function handleFileUpload(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; const pos = randPos(); const r = randRot(); const response = await fetch(`/api/archive/photos?kind=file&caption=${encodeURIComponent(file.name)}&x=${pos.x}&y=${pos.y}&rotation=${r}`, { method: "POST", headers: { "Content-Type": file.type }, body: file }); const data = await response.json(); if (response.ok) { setVaultItems(data.items); setVaultMode(null); } else setError(data.error || "Could not save file."); }
+  function startPinDrag(e: React.PointerEvent<HTMLDivElement>, item: VaultItem) { e.stopPropagation(); if (!boardRef.current) return; boardRef.current.setPointerCapture(e.pointerId); setPinDrag({ id: item.id, startX: e.clientX, startY: e.clientY, itemX: item.x ?? 10, itemY: item.y ?? 10 }); }
+  function onBoardMove(e: React.PointerEvent<HTMLDivElement>) { if (!pinDrag || !boardRef.current) return; const rect = boardRef.current.getBoundingClientRect(); const dx = ((e.clientX - pinDrag.startX) / rect.width) * 100; const dy = ((e.clientY - pinDrag.startY) / rect.height) * 100; const nx = Math.max(0, Math.min(95, pinDrag.itemX + dx)); const ny = Math.max(0, Math.min(90, pinDrag.itemY + dy)); setVaultItems(prev => prev ? prev.map(it => it.id === pinDrag.id ? { ...it, x: nx, y: ny } : it) : prev); }
+  async function onBoardUp(e: React.PointerEvent<HTMLDivElement>) { if (!pinDrag || !boardRef.current) return; const rect = boardRef.current.getBoundingClientRect(); const dx = ((e.clientX - pinDrag.startX) / rect.width) * 100; const dy = ((e.clientY - pinDrag.startY) / rect.height) * 100; const nx = Math.max(0, Math.min(95, pinDrag.itemX + dx)); const ny = Math.max(0, Math.min(90, pinDrag.itemY + dy)); const dragId = pinDrag.id; setPinDrag(null); if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return; try { await archiveRequest<{ items: VaultItem[] }>({ action: "moveItem", itemId: dragId, x: nx, y: ny }, "POST"); } catch (ex) { setError(ex instanceof Error ? ex.message : "Could not move that item."); } }
+  async function searchSongs(event: FormEvent) { event.preventDefault(); if (!songQuery.trim()) return; try { const response = await fetch(`/api/archive/spotify?q=${encodeURIComponent(songQuery)}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); setSongs(data.songs); } catch (e) { setError(e instanceof Error ? e.message : "Spotify search failed."); } }
+  async function updateTape(nextSongs: Song[], nextTitle = tape?.title) { if (!tape || !archive) return null; const result = await mutate({ action: "saveTape", tapeId: tape.id, version: tape.version, tape: { title: nextTitle || "untitled tape", color: tape.color, dedication: tape.dedication, songs: nextSongs } }); if (result) setTapeId(tape.id); return result; }
+  async function createTape() { const result = await mutate({ action: "saveTape", tape: { title: "untitled tape", color: palette[tapes.length % palette.length], dedication: "a new little world", songs: [] } }); if (result?.tapes?.length) setTapeId(result.tapes[result.tapes.length - 1].id); }
 
-  useEffect(() => {
-    sessionId.current = crypto.randomUUID();
-    setMounted(true);
-  }, []);
 
-  // Set data from backend
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
-  const [reasoning, setReasoning] = useState<ReasoningEntry[]>([]);
-  const [spec, setSpec] = useState<SetSpec | null>(null);
+  if (!signedIn) return <main className="landing-room"><nav className="topbar"><a className="wordmark" href="#top"><span>ours,</span> a little archive</a><button className="spotify-button" onClick={() => signIn("spotify")}>connect spotify to enter ↗</button></nav><div className="landing-copy"><p className="eyebrow">a private shared room</p><h1>Stories we keep.<br /><em>Music we make.</em></h1><p>Log in with Spotify to enter the shelf, make tapes, and unlock the memories waiting behind the right book.</p></div></main>;
+  if (loading) return <main className="landing-room"><div className="loading-card">warming the lamp over the shelf…</div></main>;
+  if (pending) return <main className="landing-room"><div className="setup-card"><p className="eyebrow">one shared home</p><h1>Let’s open the door.</h1>{pending.ownerConfigured ? <><p>Ask the owner for the invitation code, then enter it here.</p><input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="invitation code" /><button className="new-tape" onClick={() => mutate({ action: "join", code: joinCode })}>join our shelf</button></> : <><p>This Spotify account is not configured as the owner yet. Add its account identifier to <code>OWNER_SPOTIFY_ID</code>, restart the app, and return here.</p><code>{pending.accountId}</code></>}</div></main>;
 
-  const currentTrack = tracks[currentIndex];
-  const nextTrack = tracks[currentIndex + 1];
-
-  // Build a URI → index map for fast lookup
-  const uriToIndex = useMemo(() => {
-    const map = new Map<string, number>();
-    tracks.forEach((t, i) => map.set(t.spotifyUri, i));
-    return map;
-  }, [tracks]);
-
-  // Sync currentIndex with Spotify playback state
-  useEffect(() => {
-    if (!playerState || tracks.length === 0) return;
-
-    const currentUri = playerState.track_window?.current_track?.uri;
-    if (!currentUri) return;
-
-    const idx = uriToIndex.get(currentUri);
-    if (idx !== undefined && idx !== currentIndex) {
-      setCurrentIndex(idx);
-    }
-  }, [playerState, tracks, uriToIndex, currentIndex]);
-
-  // Auto-transfer playback when player is ready
-  useEffect(() => {
-    if (
-      isReady &&
-      deviceId &&
-      session?.accessToken &&
-      !transferred &&
-      !transferAttempted.current
-    ) {
-      transferAttempted.current = true;
-      console.log("[Pixel DJ] Transferring playback to device:", deviceId);
-      transferPlayback(session.accessToken, deviceId)
-        .then(() => {
-          console.log("[Pixel DJ] Playback transferred successfully");
-          setTransferred(true);
-        })
-        .catch((err) => {
-          console.error("[Pixel DJ] Transfer failed:", err);
-          transferAttempted.current = false;
-        });
-    }
-  }, [isReady, deviceId, session?.accessToken, transferred]);
-
-  const handleGenerate = async (prompt: string, seeds: string[]) => {
-    if (!session?.accessToken) {
-      setError("Please sign in with Spotify first");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`${API_BASE}/api/generate-set`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.accessToken}`,
-        },
-        body: JSON.stringify({ prompt, seeds, session_id: sessionId.current }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || `API error ${res.status}`);
-      }
-
-      const data = await res.json();
-      setTracks(data.tracks);
-      setTimeline(data.timeline);
-      setReasoning(data.reasoning);
-      setSpec(data.spec);
-      setCurrentIndex(0);
-      setIsSetGenerated(true);
-
-      // Auto-play the set if player is ready
-      if (isReady && deviceId && session.accessToken && data.tracks.length > 0) {
-        const uris = data.tracks.map((t: Track) => t.spotifyUri).filter(Boolean);
-        if (uris.length > 0) {
-          playTracks(session.accessToken, deviceId, uris).catch((err) =>
-            console.error("[Pixel DJ] Auto-play failed:", err)
-          );
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate set");
-      console.error("[Pixel DJ] Generate failed:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleTrackClick = async (index: number) => {
-    if (!session?.accessToken || !deviceId || !isReady) return;
-    const track = tracks[index];
-    if (!track?.spotifyUri) return;
-
-    // Play the full queue starting from the clicked track
-    const uris = tracks.slice(index).map((t) => t.spotifyUri).filter(Boolean);
-    try {
-      await playTracks(session.accessToken, deviceId, uris);
-      setCurrentIndex(index);
-    } catch (err) {
-      console.error("[Pixel DJ] Track click play failed:", err);
-    }
-  };
-
-  const handleFeedback = async (eventType: string, payload: Record<string, unknown> = {}) => {
-    try {
-      await fetch(`${API_BASE}/api/feedback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId.current,
-          track_index: currentIndex,
-          event_type: eventType,
-          payload,
-          context: {
-            track: currentTrack?.name,
-            bpm: currentTrack?.bpm,
-            energy: currentTrack?.energy,
-          },
-        }),
-      });
-    } catch (err) {
-      console.error("[Pixel DJ] Feedback failed:", err);
-    }
-  };
-
-  // Memoize energy array so Visualizer doesn't get a new ref every render
-  const energyValues = useMemo(() => tracks.map((t) => t.energy), [tracks]);
-
-  return (
-    <div className="min-h-screen flex flex-col max-w-5xl mx-auto">
-      {/* Header */}
-      <Header />
-
-      {/* Player status bar */}
-      {session?.accessToken && (
-        <div className="mx-4 mt-2 pixel-panel p-3 flex flex-col gap-2 text-[7px]">
-          {!isPremium ? (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[#bf8a4a]">FREE ACCOUNT DETECTED</span>
-              </div>
-              <div className="text-[var(--text-dim)] leading-relaxed">
-                In-browser playback requires Spotify Premium.
-                You can still generate sets, browse recommendations,
-                and plan transitions. Playback will open in your
-                Spotify app instead.
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-[var(--text-dim)]">PLAYER:</span>
-                {isReady ? (
-                  <span className="text-[#5a9b6a]">READY</span>
-                ) : (
-                  <span className="text-[var(--text-dim)]">CONNECTING...</span>
-                )}
-                {transferred && (
-                  <span className="text-[#5a9b6a]">ACTIVE DEVICE</span>
-                )}
-                {playerError && !playerError.includes("Premium") && (
-                  <span className="text-[#c4727a]">ERR: {playerError}</span>
-                )}
-              </div>
-            </div>
-          )}
+  return <main className="room"><nav className="topbar"><a className="wordmark" href="#top"><span>ours,</span> a little archive</a><div className="signed-in"><span className="avatar">{(session?.user?.name?.[0] || "O").toUpperCase()}</span>{session?.user?.name || "Spotify friend"}<span className="role-tag">{isOwner ? "owner" : "partner"}</span></div><button className="spotify-button" onClick={() => location.href = "/api/auth/signout"}>leave room</button></nav>{error && <button className="toast error" onClick={() => setError("")}>{error} ×</button>}{notice && <button className="toast" onClick={() => setNotice("")}>{notice} ×</button>}
+    <section className="intro" id="top"><p className="eyebrow">{isOwner ? "your maker's room" : "a shared corner of the internet"}</p><h1>Stories we keep.<br /><em>Music we make.</em></h1><p className="intro-copy">A living room for every book, mixtape, and tiny piece of your life together.</p><a href="#shelf" className="scroll-cue">enter the room <span>↓</span></a></section>
+    <section className="shelf-section" id="shelf"><div className="section-heading"><div><p className="eyebrow">01 — the reading shelf</p><h2>Books that found us</h2></div><span>click a spine</span></div><form className="book-search" onSubmit={addBook}><span>⌕</span><input value={bookQuery} onChange={(event) => setBookQuery(event.target.value)} placeholder="Search by title or ISBN…" /><button type="submit">add book</button></form><div className="shelf-scene"><div className="bookshelf"><div className="shelf-row">{books.map((book, index) => <article className="book" style={{ "--book-color": book.color, "--tilt": `${(index % 3 - 1) * 1.8}deg` } as React.CSSProperties} key={book.id} onClick={() => openBook(book)} title={`Open ${book.title}`}><button type="button" className="remove-book" aria-label={`Remove ${book.title}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); removeBook(book); }}>×</button>{book.cover ? <img src={book.cover} alt={`Cover for ${book.title}`} /> : <><strong>{book.title}</strong><small>{book.author}</small></>}</article>)}</div><div className="shelf-plank" /></div></div></section>
+    <section className="mixtape-section"><div className="section-heading"><div><p className="eyebrow">02 — the cassette rack</p><h2>Mixtapes for us</h2></div><button className="new-tape" onClick={createTape}>+ make a tape</button></div><p className="shared-caption">Both of you can add songs, turn the reels, and record a private Spotify playlist.</p><div className="mixtape-workspace"><div className="cassette-stage"><div className="cassette" style={{ "--tape-color": tape?.color } as React.CSSProperties}><div className="cassette-label"><span>side a + b</span><input value={tapeTitle} onChange={(event) => setTapeTitle(event.target.value)} onBlur={() => { if (tape && tapeTitle !== tape.title) updateTape(tape.songs, tapeTitle || tape.title); }} /><small>{tape?.songs.length || 0} songs pressed</small></div><div className="reels"><i /><i /></div><div className="tape-window" /><div className="cassette-bottom" /></div></div><div className="tape-controls"><div className="tape-tabs">{tapes.map((item, index) => <button key={item.id} className={item.id === tape?.id ? "active" : ""} onClick={() => setTapeId(item.id)}>tape {String(index + 1).padStart(2, "0")}<span className="delete-tape" onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteTape(item.id); }}>×</span></button>)}</div><form className="song-search" onSubmit={searchSongs}><input value={songQuery} onChange={(event) => setSongQuery(event.target.value)} placeholder="search Spotify…" /><button>search</button></form>{songs.length > 0 ? <div className="song-results">{songs.map((song) => <button key={song.id} onClick={() => { if (tape) updateTape([...tape.songs, song]); setSongs([]); }}><span><b>{song.name}</b><small>{song.artist}</small></span><i>+</i></button>)}</div> : <div className="track-list">{tape?.songs.length ? tape.songs.map((song, index) => <div className="track" key={`${song.id}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><p><b>{song.name}</b><small>{song.artist}</small></p><button onClick={() => updateTape(tape.songs.filter((_, songIndex) => songIndex !== index))}>×</button></div>) : <div className="empty-tracks">♫<p>This tape is waiting for its first song.</p></div>}</div>}{(isOwner || (isPartner && archive?.playlists?.[tape?.id ?? ""])) && <button className="record-button" onClick={async () => { if (!tape?.id) { setError("Choose a mixtape before recording it to Spotify."); return; } try { const response = await fetch("/api/archive/spotify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tapeId: tape.id }) }); const data = await response.json(); if (response.ok) { if (isOwner) setNotice("Tape recorded to Spotify."); else { window.open(data.url, "_blank"); setNotice("Playlist added to your Spotify."); } } else setError(data.error || "Spotify could not complete this."); } catch { setError("Spotify could not be reached. Check your connection and try again."); } }}>{isPartner && archive?.playlists?.[tape?.id ?? ""] ? "follow on Spotify ↗" : "record to Spotify ↗"}</button>}</div></div></section>
+    {selectedBook && <div className="overlay"><section className="book-modal"><button className="close-modal" onClick={() => setSelectedBook(null)}>×</button><p className="eyebrow">you opened a spine</p><h2>{selectedBook.title}</h2><p className="book-author">{selectedBook.author}</p>{isOwner && <div className="note-maker"><label>tuck a surprise note inside</label><textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="A tiny thought for her…" /><button onClick={saveNote}>tuck it in</button></div>}{bookNotes.length > 0 && <div className="notes-stack">{bookNotes.map((note) => <article className="falling-note" key={note.id}>{isOwner && <button className="remove-note" onClick={() => deleteNote(note.id)}>×</button>}<span>{isPartner ? "a note for you" : "tucked note"}</span><p>{note.body}</p></article>)}</div>}</section></div>}
+    {vaultItems && <div className="overlay vault-overlay">
+      <button className="close-board" onClick={() => { setVaultItems(null); setVaultMode(null); setExpandedPin(null); setPendingPhoto(null); }}>×</button>
+      <div className="cork-board" ref={boardRef} onPointerMove={onBoardMove} onPointerUp={(e) => { void onBoardUp(e); }} onPointerLeave={(e) => { void onBoardUp(e); }}>
+        {vaultItems.map(item => {
+          const x = item.x ?? 10, y = item.y ?? 10;
+          return <div key={item.id}
+            className={`pin-card pin-${item.kind}${pinDrag?.id === item.id ? " dragging" : ""}`}
+            style={{ left: `${x}%`, top: `${y}%`, "--rot": `${item.rotation}deg`, "--note-color": item.color ?? "#fef3a0" } as CSSProperties}
+            onPointerDown={isOwner ? (e) => startPinDrag(e, item) : undefined}
+            onClick={() => setExpandedPin(item.id)}>
+            <div className="pushpin" />
+            {item.kind === "message" && <p>{item.body}</p>}
+            {item.kind === "photo" && <><img src={`/api/archive/photos?id=${item.id}`} alt="memory" /><span className="pin-caption">{item.body}</span></>}
+            {item.kind === "link" && <><strong>{item.body}</strong><span className="pin-url">{item.url}</span><a href={item.url ?? "#"} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>open ↗</a></>}
+            {item.kind === "file" && <><span className="pin-filename">{item.body}</span><a href={`/api/archive/photos?id=${item.id}&kind=file`} download={item.body} onClick={e => e.stopPropagation()}>download ↓</a></>}
+            {item.kind === "envelope" && <><span style={{display:"block",textAlign:"center",fontSize:26,margin:"2px 0 8px"}}>✉</span><span style={{display:"block",fontSize:9,textTransform:"uppercase",letterSpacing:".06em",color:"#7a6050",textAlign:"center"}}>{item.url || "a letter for you"}</span></>}
+            <time className="pin-date">{new Date(item.created).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</time>
+            {isOwner && <button className="pin-remove" onClick={(e) => { e.stopPropagation(); removeVaultItem(item.id); }}>×</button>}
+          </div>;
+        })}
+      </div>
+      {isOwner && <div className="vault-toolbar">
+        <button onClick={() => setVaultMode("note")}>sticky note</button>
+        <button onClick={() => setVaultMode("photo")}>photo</button>
+        <button onClick={() => setVaultMode("link")}>link</button>
+        <button onClick={() => setVaultMode("file")}>file</button>
+        <button onClick={() => setVaultMode("envelope")}>envelope</button>
+        <div className="vault-phrase-row">
+          <input value={phrase} onChange={e => setPhrase(e.target.value)} placeholder="set secret phrase" />
+          <button onClick={configureVaultPhrase}>set</button>
         </div>
-      )}
-
-      {/* Main content */}
-      <main className="flex-1 p-4 flex flex-col gap-4">
-        <VibePrompt onGenerate={handleGenerate} isLoading={isLoading} spec={spec} />
-
-        {error && (
-          <div className="pixel-panel p-3 text-[8px] text-[#c4727a]">
-            ERROR: {error}
-          </div>
-        )}
-
-        {isLoading && (
-          <div className="pixel-panel p-4 text-center text-[8px] text-[var(--text-dim)]">
-            GENERATING SET...
-          </div>
-        )}
-
-        {isSetGenerated && !isLoading && tracks.length > 0 && (
-          <>
-            <SetTimeline tracks={timeline} currentIndex={currentIndex} />
-
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-4">
-              <div className="flex flex-col gap-4">
-                {currentTrack && (
-                  <NowPlaying
-                    bpm={currentTrack.bpm}
-                    musicalKey={currentTrack.musicalKey}
-                    energy={currentTrack.energy}
-                  />
-                )}
-                <FeedbackBar onFeedback={handleFeedback} />
-              </div>
-
-              <div className="flex flex-col gap-4">
-                {currentTrack && nextTrack && (
-                  <TransitionView
-                    fromTrack={currentTrack.name}
-                    toTrack={nextTrack.name}
-                    type={timeline[currentIndex]?.transitionType || "CUT"}
-                    blendBars={timeline[currentIndex]?.transitionType === "LONG_BLEND" ? 16 : timeline[currentIndex]?.transitionType === "SHORT_BLEND" ? 8 : 0}
-                    exitTime="3:12"
-                    exitSection="outro (stable groove)"
-                    entryTime="0:24"
-                    entrySection="first groove"
-                    confidence={85}
-                    deltaBpm={Math.round((nextTrack.bpm - currentTrack.bpm) * 10) / 10}
-                    keyDistance={`${currentTrack.musicalKey} > ${nextTrack.musicalKey}`}
-                    deltaEnergy={Math.round((nextTrack.energy - currentTrack.energy) * 100) / 100}
-                  />
-                )}
-                <DJReasoning entries={reasoning} />
-              </div>
-            </div>
-
-            <Visualizer energyValues={energyValues} currentIndex={currentIndex} />
-
-            <SetQueue
-              tracks={tracks}
-              currentIndex={currentIndex}
-              onTrackClick={handleTrackClick}
-            />
-          </>
-        )}
-      </main>
-
-      <footer className="px-6 py-3 border-t-2 border-[var(--border)] flex justify-between text-[6px] text-[var(--text-dim)]">
-        <span>PIXEL DJ v1.0</span>
-        <span>44.1kHz / 16BIT</span>
-        <span>SESSION: {mounted ? sessionId.current.slice(0, 8) : "--------"}</span>
-      </footer>
-    </div>
-  );
+      </div>}
+      {expandedPin && vaultItems && (() => { const item = vaultItems.find(it => it.id === expandedPin); if (!item) return null; return <div className="pin-letter-overlay" onClick={() => setExpandedPin(null)}><div className="pin-letter-paper" onClick={e => e.stopPropagation()}><button className="close-modal" onClick={() => setExpandedPin(null)}>×</button>{item.kind === "envelope" && <><p className="eyebrow" style={{marginBottom:18}}>✉ {item.url || "a letter for you"}</p><p style={{font:"18px/1.7 Fraunces,serif",color:"#3a2e24",margin:0,whiteSpace:"pre-wrap"}}>{item.body}</p></>}{item.kind === "message" && <p style={{font:"18px/1.7 Fraunces,serif",color:"#3a2e24",margin:0,whiteSpace:"pre-wrap"}}>{item.body}</p>}{item.kind === "photo" && <><img src={`/api/archive/photos?id=${item.id}`} alt={item.body || "photo"} style={{maxWidth:"100%",display:"block",marginBottom:item.body ? 14 : 0}} />{item.body && <p style={{font:"14px/1.5 Fraunces,serif",color:"#5a4a3a",margin:0,textAlign:"center",fontStyle:"italic"}}>{item.body}</p>}</>}</div></div>; })()}
+      {vaultMode && isOwner && <div className="vault-add-panel">
+        <button className="close-modal" onClick={() => setVaultMode(null)}>×</button>
+        {vaultMode === "note" && <><div className="color-swatches">{["#fef3a0","#c7f2a4","#ffc8c8","#c8e6ff","#ffe4b5"].map(c => <button key={c} className={`color-swatch${stickyColor === c ? " active" : ""}`} style={{ background: c }} onClick={() => setStickyColor(c)} />)}</div><textarea value={vaultDraft} onChange={e => setVaultDraft(e.target.value)} placeholder="what do you want to say?" /><button onClick={addVaultNote}>pin it</button></>}
+        {vaultMode === "photo" && <>{!pendingPhoto ? <label className="photo-upload">pick a photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e => { const f = e.target.files?.[0]; if (f) setPendingPhoto(f); }} /></label> : <><p style={{fontSize:11,margin:"0 0 8px",color:"#7a6050",wordBreak:"break-all"}}>{pendingPhoto.name}</p><input value={photoCaption} onChange={e => setPhotoCaption(e.target.value)} placeholder="add a caption (optional)" /><button onClick={() => handlePhotoUpload(pendingPhoto, photoCaption)}>pin it</button><button style={{background:"transparent",border:"1px solid #bfae9d",color:"#7a6050"}} onClick={() => { setPendingPhoto(null); setPhotoCaption(""); }}>← back</button></>}</>}
+        {vaultMode === "link" && <><input value={linkTitle} onChange={e => setLinkTitle(e.target.value)} placeholder="title" /><input value={linkUrl} onChange={e => setLinkUrl(e.target.value)} placeholder="https://..." /><button onClick={addVaultLink}>pin it</button></>}
+        {vaultMode === "file" && <label className="photo-upload">pick a file<input type="file" accept=".pdf,.doc,.docx,.txt,.zip" onChange={handleFileUpload} /></label>}
+        {vaultMode === "envelope" && <><p style={{fontSize:9,textTransform:"uppercase",letterSpacing:".06em",color:"#888",margin:"0 0 10px"}}>sealed letter ✉</p><div className="color-swatches">{["#fdf6e3","#e8f4e4","#fce8e8","#e8effe","#f5e8fc"].map(c => <button key={c} className={`color-swatch${stickyColor === c ? " active" : ""}`} style={{ background: c }} onClick={() => setStickyColor(c)} />)}</div><input value={openNote} onChange={e => setOpenNote(e.target.value)} placeholder="open on… (e.g. our anniversary, dec 25)" /><textarea value={vaultDraft} onChange={e => setVaultDraft(e.target.value)} placeholder="write your letter here…" /><button onClick={addVaultEnvelope}>seal it ✉</button></>}
+      </div>}
+    </div>}
+    {isOwner && !archive?.partnerJoined && <aside className="invite-card"><p className="eyebrow">invite your person</p>{invite ? <code>{invite}</code> : <button onClick={async () => { const result = await archiveRequest<{ code: string }>({ action: "invite" }, "POST"); setInvite(result.code); }}>create one-use invite</button>}<p>Send this code to your girlfriend so she can sign in with her Spotify account.</p></aside>}
+    {isOwner && <button className="vault-floating" onClick={openMyVault}>open secret vault</button>}
+    {showVaultPrompt && <div className="overlay"><section className="vault-prompt"><button className="close-modal" onClick={() => { setShowVaultPrompt(false); setPhrase(""); }}>×</button><p className="eyebrow">enter the secret phrase</p><input value={phrase} onChange={(event) => setPhrase(event.target.value)} placeholder="the phrase they told you" /><button className="unlock-button" onClick={unlockVault}>open</button></section></div>}
+    <footer>made slowly, for the two of us <span onDoubleClick={() => { if (isOwner) openMyVault(); else if (isPartner) setShowVaultPrompt(true); }}>♡</span></footer>
+  </main>;
 }

@@ -1,5 +1,6 @@
 import type { NextAuthOptions } from "next-auth";
 import SpotifyProvider from "next-auth/providers/spotify";
+import { randomUUID } from "node:crypto";
 
 const SPOTIFY_SCOPES = [
   "streaming",
@@ -7,6 +8,8 @@ const SPOTIFY_SCOPES = [
   "user-read-private",
   "user-read-playback-state",
   "user-modify-playback-state",
+  "playlist-modify-private",
+  "playlist-modify-public",
 ].join(" ");
 
 export const authOptions: NextAuthOptions = {
@@ -20,14 +23,21 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, profile }) {
       // On initial sign-in, persist the Spotify tokens
       if (account) {
+        const spotifyProfile = profile as { account_id?: string; id?: string } | undefined;
+        token.spotifyId = spotifyProfile?.account_id || spotifyProfile?.id || account.providerAccountId;
+        token.archiveSession = randomUUID();
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
         token.expiresAt = account.expires_at;
         return token;
       }
+
+      // Migrate sessions created before the shared archive was added.
+      if (!token.spotifyId && token.sub) token.spotifyId = token.sub;
+      if (!token.archiveSession) token.archiveSession = randomUUID();
 
       // If token hasn't expired, return as-is
       if (token.expiresAt && Date.now() < token.expiresAt * 1000) {
@@ -40,9 +50,9 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       session.accessToken = token.accessToken;
       session.error = token.error;
-      if (token.sub) {
-        session.user.id = token.sub;
-      }
+      // Older sessions must reauthenticate to obtain an explicit Spotify identity.
+      session.user.id = token.spotifyId;
+      session.archiveSession = token.archiveSession;
       return session;
     },
   },
