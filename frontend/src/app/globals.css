@@ -12,7 +12,7 @@
 .pin-message{width:182px;min-height:148px;padding:22px 14px 12px;background:var(--note-color,#fef3a0);color:#2a2a20;font:14px/1.5 Fraunces,serif;box-shadow:3px 6px 16px #0005}
 .pin-photo{width:184px;background:#fff;padding:8px 8px 38px;box-shadow:3px 6px 16px #0005;cursor:pointer}
 .pin-photo img{width:100%;aspect-ratio:1;object-fit:cover;display:block}
-.pin-caption{display:block;font:11px Fraunces,serif;color:#555;text-align:center;padding-top:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pin-caption{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font:11px/1.4 Fraunces,serif;color:#555;text-align:center;padding-top:9px;word-break:break-word}
 .pin-link{width:200px;padding:18px 14px 12px;background:#f5f0e8;border-left:4px solid #7a9e82;color:#2a2a20;font-size:12px;box-shadow:3px 6px 16px #0005}
 .pin-url{display:block;font-size:9px;color:#888;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pin-link a{color:#4a7a5a;text-decoration:none;font-size:10px;display:block;margin-top:6px}

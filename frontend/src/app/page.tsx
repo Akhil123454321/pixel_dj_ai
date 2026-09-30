@@ -99,7 +99,7 @@ export default function Home() {
             {item.kind === "file" && <><span className="pin-filename">{item.body}</span><a href={`/api/archive/photos?id=${item.id}&kind=file`} download={item.body} onClick={e => e.stopPropagation()}>download ↓</a></>}
             {item.kind === "envelope" && <><span style={{display:"block",textAlign:"center",fontSize:26,margin:"2px 0 8px"}}>✉</span><span style={{display:"block",fontSize:9,textTransform:"uppercase",letterSpacing:".06em",color:"#7a6050",textAlign:"center"}}>{item.url || "a letter for you"}</span></>}
             <time className="pin-date">{new Date(item.created).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</time>
-            {isOwner && <button className="pin-remove" onClick={(e) => { e.stopPropagation(); removeVaultItem(item.id); }}>×</button>}
+            {isOwner && <button className="pin-remove" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); removeVaultItem(item.id); }}>×</button>}
           </div>;
         })}
       </div>
